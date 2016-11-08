@@ -5,6 +5,8 @@ import cats.data._
 import cats.implicits._
 import spray.json.DefaultJsonProtocol._
 import spray.json._
+import SprayJsonInstances._
+import FieldDependencyT._
 
 import scala.language.higherKinds
 
@@ -48,9 +50,7 @@ trait FieldDependencyTInstances {
   }
 }
 
-
 object SimpleFDTest extends App {
-
   type Hash = String
   type HashReaderT[F[_], T] = ReaderT[F, Hash, T]
 
@@ -59,21 +59,20 @@ object SimpleFDTest extends App {
   }
 
   type RS = Map[String, Any]
-  type CT[X] = FieldDependencyT[String, RS => ?, X]
+  type OneItem[X] = FieldDependencyT[String, RS => ?, X]
 
 
-  val name = new CT(Set("name"), rs => JsObject("name" -> rs("name").toString.toJson))
-  val link = new CT(Set("link"), rs => JsObject("link" -> rs("link").toString.toJson))
+  val name = new OneItem(Set("name"), rs => JsObject("name" -> rs("name").toString.toJson))
+  val link = new OneItem(Set("link"), rs => JsObject("link" -> rs("link").toString.toJson))
   val hash = new HashReaderT[Id, JsObject](hash =>
     JsObject("hash" -> hash.toJson)
   )
 
-  val item: HashReaderT[CT, JsObject] = List(
+  val item: HashReaderT[OneItem, JsObject] = List(
     HashReaderT.lift(name)
     , HashReaderT.lift(link)
-    , hash.transform(Lambda[Id ~> CT](_.pure[CT]))
+    , hash.transform(Lambda[Id ~> OneItem](x => x.pure[OneItem]))
   ).combineAll
-
 
   val res = item.apply("HASH").apply {
     case (fields, result) =>
