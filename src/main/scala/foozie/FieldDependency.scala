@@ -20,8 +20,8 @@ object SprayJsonInstances {
   }
 }
 
-case class FieldDependencyT[Field, F[_], Value](fields: Set[Field], value: F[Value]) {
-  def apply(f: (Set[Field], F[Value]) => Value): Value = f(fields, value)
+case class FieldDependencyT[Field, Value](fields: Set[Field], value: Value) {
+  def apply[T](f: (Set[Field], Value) => T) = f(fields, value)
 }
 
 object FieldDependencyT extends FieldDependencyTInstances with FieldDependencyTFunctions
@@ -30,21 +30,22 @@ trait FieldDependencyTFunctions {
 }
 
 trait FieldDependencyTInstances {
-
-  implicit def fieldDependencyTApplicative[Field, F[_]](implicit fap: Applicative[F]) = new Applicative[FieldDependencyT[Field, F, ?]] {
-    override def pure[A](x: A): FieldDependencyT[Field, F, A] = {
-      FieldDependencyT(Set.empty, fap.pure(x))
+  implicit def fieldDependencyTApplicative[Field] = new Applicative[FieldDependencyT[Field, ?]] {
+    override def pure[A](x: A): FieldDependencyT[Field, A] = {
+      FieldDependencyT(Set.empty, x)
     }
 
-    override def ap[A, B](ff: FieldDependencyT[Field, F, (A) => B])(fa: FieldDependencyT[Field, F, A]): FieldDependencyT[Field, F, B] = {
-      FieldDependencyT(ff.fields ++ fa.fields, fap.ap(ff.value)(fa.value))
+    override def ap[A, B](ff: FieldDependencyT[Field, (A) => B])(fa: FieldDependencyT[Field, A]): FieldDependencyT[Field, B] = {
+      new FieldDependencyT(ff.fields ++ fa.fields, ff.value(fa.value))
     }
   }
 
-  implicit def fieldDependencyTMonoid[Field, F[_], T](implicit monoid: Monoid[F[T]]) = new Monoid[FieldDependencyT[Field, F, T]] {
-    override def empty: FieldDependencyT[Field, F, T] = FieldDependencyT(Set.empty, monoid.empty)
+  implicit def fieldDependencyTMonoid[Field, T](implicit monoid: Monoid[T]) = new Monoid[FieldDependencyT[Field, T]] {
+    override def empty: FieldDependencyT[Field, T] = {
+      monoid.empty.pure[FieldDependencyT[Field, ?]]
+    }
 
-    override def combine(x: FieldDependencyT[Field, F, T], y: FieldDependencyT[Field, F, T]): FieldDependencyT[Field, F, T] = {
+    override def combine(x: FieldDependencyT[Field, T], y: FieldDependencyT[Field, T]): FieldDependencyT[Field, T] = {
       FieldDependencyT(x.fields ++ y.fields, x.value.combine(y.value))
     }
   }
@@ -52,34 +53,42 @@ trait FieldDependencyTInstances {
 
 object SimpleFDTest extends App {
   type Hash = String
-  type HashReaderT[F[_], T] = ReaderT[F, Hash, T]
+  type HashReader[T] = Reader[Hash, T]
 
-  object HashReaderT {
-    def lift[F[_], A](x: F[A]): HashReaderT[F, A] = Kleisli.lift[F, Hash, A](x)
+  object HashReader {
+    def lift[A](x: A): HashReader[A] = Reader.apply(_ => x)
   }
 
-  type RS = Map[String, Any]
-  type OneItem[X] = FieldDependencyT[String, RS => ?, X]
+  type RS[T] = Map[String, Any] => T
+  type OneItem[T] = FieldDependencyT[String, T]
+  object OneItem {
+    def apply[T](deps: Set[String], value: T) = new FieldDependencyT[String, T](deps, value)
+  }
 
 
-  val name = new OneItem(Set("name"), rs => JsObject("name" -> rs("name").toString.toJson))
-  val link = new OneItem(Set("link"), rs => JsObject("link" -> rs("link").toString.toJson))
-  val hash = new HashReaderT[Id, JsObject](hash =>
+  val name = OneItem[RS[JsObject]](Set("name"), rs => JsObject("name" -> rs("name").toString.toJson))
+  val link = OneItem[RS[JsObject]](Set("link"), rs => JsObject("link" -> rs("link").toString.toJson))
+  val hash = new HashReader(hash =>
     JsObject("hash" -> hash.toJson)
   )
 
-  val item: HashReaderT[OneItem, JsObject] = List(
-    HashReaderT.lift(name)
-    , HashReaderT.lift(link)
-    , hash.transform(Lambda[Id ~> OneItem](x => x.pure[OneItem]))
+  type Stack[T] = HashReader[OneItem[RS[T]]]
+
+//  implicit val y = implicitly[Monoid[HashReader[OneItem[RS[JsObject]]]]]
+  implicit val x = implicitly[Monoid[Stack[JsObject]]]
+//  implicit val x: Applicative[Stack] = implicitly[Applicative[HashReader]].compose(implicitly[Applicative[OneItem]]).compose(implicitly[Applicative[RS]])
+
+  val item = List[Stack[JsObject]](
+    HashReader.lift(name)
+    , HashReader.lift(link)
+    , hash.map(_.pure[RS].pure[OneItem])
+//    name, link
   ).combineAll
 
-  val res = item.apply("HASH").apply {
-    case (fields, result) =>
-      println(fields)
-      result(Map("name" -> "NAME", "link" -> "LINK"))
-  }
-  println(res)
-
-
+//  val res = item.apply("HASH").apply {
+//    case (fields, result) =>
+//      println(fields)
+//      result(Map("name" -> "NAME", "link" -> "LINK"))
+//  }
+//  println(res)
 }
